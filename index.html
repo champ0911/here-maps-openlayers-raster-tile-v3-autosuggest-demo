@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>HERE Maps v3 with Search & Markers (Fixed)</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ol@v9.2.4/ol.css">
+  <style>
+    html, body, #map { margin:0; padding:0; width:100%; height:100%; overflow:hidden; }
+    #search-container { position:absolute; top:10px; left:50%; transform:translateX(-50%); width:90%; max-width:400px; z-index:1000; font-family:Arial, sans-serif; }
+    #search-input { width:100%; padding:12px; border:1px solid #ccc; border-radius:8px; box-shadow:0 2px 6px rgba(0,0,0,0.1); font-size:16px; box-sizing:border-box; }
+    #suggestions-panel { background:white; border-radius:8px; margin-top:4px; box-shadow:0 4px 8px rgba(0,0,0,0.1); max-height:300px; overflow-y:auto; display:none; }
+    .suggestion-item { padding:10px 12px; cursor:pointer; border-bottom:1px solid #eee; }
+    .suggestion-item:last-child { border-bottom:none; }
+    .suggestion-item:hover { background:#f0f0f0; }
+    .suggestion-item small { color:#555; }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+
+  <div id="search-container">
+    <input type="text" id="search-input" placeholder="Search for a place...">
+    <div id="suggestions-panel"></div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/ol@v9.2.4/dist/ol.js"></script>
+  <script>
+    const apiKey = 'yourapikey';
+
+    // --- MAP INITIALIZATION ---
+    const hereLayer = new ol.layer.Tile({
+      source: new ol.source.XYZ({
+        url: `https://maps.hereapi.com/v3/base/mc/{z}/{x}/{y}/png?size=512&apiKey=${apiKey}&style=explore.day&lang=en&ppi=200&scale=1`,
+        tileSize: [512, 512],
+        attributions: `HERE MAPS © ${new Date().getFullYear()} HERE`
+      })
+    });
+
+    const markerSource = new ol.source.Vector();
+    const markerIconSvg =
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#E74C3C" width="36" height="36"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/></svg>';
+
+    const markerStyle = new ol.style.Style({
+      image: new ol.style.Icon({
+        anchor: [0.5, 1],
+        src: 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(markerIconSvg)
+      })
+    });
+
+    const markerLayer = new ol.layer.Vector({ source: markerSource, style: markerStyle });
+
+    const map = new ol.Map({
+      target: 'map',
+      layers: [hereLayer, markerLayer],
+      view: new ol.View({ center: ol.proj.fromLonLat([13.4050, 52.5200]), zoom: 12 })
+    });
+
+    // --- SEARCH FUNCTIONALITY ---
+    const searchInput = document.getElementById('search-input');
+    const suggestionsPanel = document.getElementById('suggestions-panel');
+    let debounceTimeout;
+
+    searchInput.addEventListener('input', (e) => {
+      const query = e.target.value.trim();
+      clearTimeout(debounceTimeout);
+
+      debounceTimeout = setTimeout(() => {
+        if (query.length < 3) {
+          suggestionsPanel.style.display = 'none';
+          suggestionsPanel.innerHTML = '';
+          return;
+        }
+        fetchAutosuggest(query);
+      }, 300);
+    });
+
+    async function fetchAutosuggest(query) {
+      const center = ol.proj.toLonLat(map.getView().getCenter());
+      const url = `https://autosuggest.search.hereapi.com/v1/autosuggest?q=${encodeURIComponent(query)}&at=${center[1]},${center[0]}&limit=5&apiKey=${apiKey}`;
+
+      try {
+        const response = await fetch(url);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const data = await response.json();
+        displaySuggestions(data.items || []);
+      } catch (error) {
+        console.error('Autosuggest fetch error:', error);
+        suggestionsPanel.style.display = 'none';
+      }
+    }
+
+    function displaySuggestions(items) {
+      suggestionsPanel.innerHTML = '';
+      const valid = items.filter(it => it.position && Number.isFinite(it.position.lat) && Number.isFinite(it.position.lng));
+      if (valid.length === 0) {
+        suggestionsPanel.style.display = 'none';
+        return;
+      }
+
+      for (const item of valid) {
+        const div = document.createElement('div');
+        div.className = 'suggestion-item';
+        const label = item.address && item.address.label ? item.address.label : '';
+        div.innerHTML = `<b>${item.title}</b>${label ? `<br><small>${label}</small>` : ''}`;
+        div.addEventListener('click', () => selectSuggestion(item));
+        suggestionsPanel.appendChild(div);
+      }
+      suggestionsPanel.style.display = 'block';
+    }
+
+    // Use the suggestion directly — no second API call needed.
+    function selectSuggestion(item) {
+      try {
+        searchInput.value = item.title;
+        suggestionsPanel.style.display = 'none';
+
+        const { lat, lng } = item.position; // <-- IMPORTANT: it's 'lng', not 'lon'
+        if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+          console.warn('Invalid coordinates in suggestion:', item.position);
+          return;
+        }
+        addMarkerAndPan([lng, lat]);
+      } catch (e) {
+        console.error('selectSuggestion error:', e);
+      }
+    }
+
+    function addMarkerAndPan(lonLat) {
+      const [lon, lat] = lonLat;
+      if (!Number.isFinite(lon) || !Number.isFinite(lat)) return;
+
+      const coords = ol.proj.fromLonLat([lon, lat]);
+      if (!Array.isArray(coords) || !Number.isFinite(coords[0]) || !Number.isFinite(coords[1])) return;
+
+      markerSource.clear();
+      markerSource.addFeature(new ol.Feature({ geometry: new ol.geom.Point(coords) }));
+      map.getView().animate({ center: coords, zoom: 15, duration: 1000 });
+    }
+
+    // Click outside to close suggestions
+    document.addEventListener('click', (e) => {
+      if (!document.getElementById('search-container').contains(e.target)) {
+        suggestionsPanel.style.display = 'none';
+      }
+    });
+  </script>
+</body>
+</html>
