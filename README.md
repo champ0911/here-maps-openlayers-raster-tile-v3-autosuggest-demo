@@ -18,7 +18,6 @@ Just open `index.html` in a browser. No build step.
 .
 ├── index.html   # All the logic (map, markers, autosuggest)
 ├── README.md
-└── .gitignore
 ```
 
 ## Attribution
